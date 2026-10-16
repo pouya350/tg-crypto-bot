@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"tgdobot/internal/telegram"
 	_ "github.com/lib/pq"
 )
 
@@ -21,7 +22,7 @@ func NewPostgresStorage(path string) (*PostgresStorage ,error){
 	if err2 != nil{
 		fmt.Errorf("No Ping -> not working baza")
 	}
-	issue:= "CREATE TABLE IF NOT EXISTS tasks (id serial primary key, chat_id bigint not null, task_text text not null )"
+	issue:= "CREATE TABLE IF NOT EXISTS portfolio (id serial primary key, chat_id bigint not null, ticker varchar, price double precision, amount double precision, period varchar)"
 	_, err3 := baza.Exec(issue)
 	if err3!= nil{
 		return nil, fmt.Errorf("Issue wrond %v", err3)
@@ -29,9 +30,9 @@ func NewPostgresStorage(path string) (*PostgresStorage ,error){
 	return &PostgresStorage{db: baza}, nil
 }
 
-func (p *PostgresStorage) Add(chatID int64, task string) {
-	str:= "insert into tasks (chat_id, task_text) values ($1, $2)"
-	_, err:= p.db.Exec(str, chatID, task)
+func (p *PostgresStorage) Add(chatID int64, pos telegram.Position) {
+	str:= "insert into portfolio (chat_id, ticker, price, amount, period) values ($1, $2, $3, $4, $5)"
+	_, err:= p.db.Exec(str, chatID, pos.Ticker, pos.Price, pos.Amount, pos.Period )
 	if err != nil {
     	log.Printf("Ошибка сохранения задачи в БД: %v", err)
 	}

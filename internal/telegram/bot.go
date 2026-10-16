@@ -12,9 +12,11 @@ import (
 
 const (
 	StateEmp             = ""
-	StateW8For           = "waiting_task_name"
-	StateTimeRunOut      = "waiting_deadline"
-	StateTheasisW8       = "waiting_thesis"
+	StateW8ForTicker	 = "waiting_ticker_name"
+	StatePrice           = "waiting_price"
+	StateValuePosition   = "waiting_value_amount"
+	StateLongLastPosition = "how_long_wait_For_profit"
+	
 	StateCheck1          = "check_1"
 	StateCheck2          = "check_2"
 	StateCheck3          = "check_3"
@@ -27,22 +29,50 @@ const (
 )
 
 type Storage interface {
-	Add(chatID int64, task string)
+	Add(chatID int64, pos Position)
 	List(chatID int64) []string
 	Delete(chatID int64, index int) error
 }
+
+type Position struct{	
+	Ticker string
+	Price float64
+	Amount float64
+	Period string
+}
+
+type RiskCalc struct{
+	Deposit float64
+	RiskPercent float64
+	StopLoss float64
+}
+type CoinCompare struct{
+	FirstCoin string
+	SecondCoin string
+}
+
 type Bot struct {
 	Client    *tgbotapi.BotAPI
 	Stor      Storage
 	States    map[int64]string
-	TaskCache map[int64]string
+	PostgersCache map[int64]*Position
 	StatusMap map[string]string
 	CommandMap map[string]string
+	RiskCache map[int64]*RiskCalc
+	CheckCache map[int64]*CoinCompare
 }
 
 type BinanceResponse struct{
 	Symbol string`json:"symbol"`
 	Price string`json:"price"`
+}
+
+func (b *Bot) handleStart(message *tgbotapi.Message) {
+	chatID := message.Chat.ID
+	msg := tgbotapi.NewMessage(chatID, `Привет! Я твой Инвест-Менеджер. 
+	Чтобы узнать доступные команды:
+	/cmd`)
+	b.Client.Send(msg)
 }
 
 func (b *Bot) handlerPrice(update *tgbotapi.Message){
@@ -53,16 +83,16 @@ func (b *Bot) handlerPrice(update *tgbotapi.Message){
 }
 func (b *Bot) handlerFirstCoin(update tgbotapi.Update){
 	chatID:= update.Message.Chat.ID
-	b.TaskCache[chatID]+=update.Message.Text
+	b.CheckCache[chatID] = &CoinCompare{}
+	b.CheckCache[chatID].FirstCoin = strings.ToUpper(update.Message.Text)
 	msg:=tgbotapi.NewMessage(chatID, "Цену к какой монете смотрим (например usdt)")
 	b.Client.Send(msg)
 	b.States[chatID] = StateSecondCoin
 }
 func (b *Bot) handlerSecondCoin(update tgbotapi.Update){
 	chatID:= update.Message.Chat.ID
-	b.TaskCache[chatID]+=update.Message.Text
-	bigSymbols := strings.ToUpper(b.TaskCache[chatID])
-	strprice , err:= getCryptoPrice(bigSymbols)
+	b.CheckCache[chatID].SecondCoin = strings.ToUpper(update.Message.Text)
+	strprice , err:= getCryptoPrice(b.CheckCache[chatID].FirstCoin+b.CheckCache[chatID].SecondCoin)
 	if err != nil{
 		msg:=tgbotapi.NewMessage(chatID, "Такого соотношения монет не существует")
 		b.Client.Send(msg)
@@ -71,7 +101,7 @@ func (b *Bot) handlerSecondCoin(update tgbotapi.Update){
 	}
 	msg:= tgbotapi.NewMessage(chatID, strprice)
 	b.Client.Send(msg)
-	delete(b.TaskCache, chatID)
+	delete(b.PostgersCache, chatID)
 	b.States[chatID] = StateEmp
 }
 func  getCryptoPrice(symbols string) (string, error){
@@ -92,22 +122,23 @@ func  getCryptoPrice(symbols string) (string, error){
 
 func BotConstruct(client *tgbotapi.BotAPI, stor Storage) *Bot {
 	cmds := map[string]string{
-		"add":    "Добавить новую задачу",
+		"buy":    "Добавить токен к покупке",
 		"price":  "Узнать текущий курс криптовалюты",
 		"cancel": "Отменить текущее действие",
-		"list":   "Показать список всех задач",
+		"list":   "Показать портфель",
 		"check":  "Пройти чек-лист перед сделкой",
 		"risk":   "Калькулятор риск-менеджмента",
-		"del":    "Удалить задачу",
+		"sell":    "Продать актив",
 		"cmd":    "Список доступных команд",
 		"status": "Узнать текущий статус и активный процесс",
 	}
 
 	statuses := map[string]string{
 		StateEmp:             "Всё чисто, жду команд",
-		StateW8For:           "Ожидаю ввода названия задачи",
-		StateTimeRunOut:      "Ожидаю ввода дедлайна",
-		StateTheasisW8:       "Ожидаю ввода тезиса",
+		StateW8ForTicker:     "Ожидаю ввода названия токена",
+		StateValuePosition:   "Ожидаю ввода объема покупки",
+		StateLongLastPosition: "Как долго держать токе",
+		StatePrice:      	  "Ожидаю ввода нынешней цены",
 		StateCheck1:          "Прохожу чек-лист перед покупкой (вопрос 1)",
 		StateCheck2:          "Прохожу чек-лист перед покупкой (вопрос 2)",
 		StateCheck3:          "Прохожу чек-лист перед покупкой (вопрос 3)",
@@ -123,24 +154,79 @@ func BotConstruct(client *tgbotapi.BotAPI, stor Storage) *Bot {
 		Client:     client,
 		Stor:       stor,
 		States:     make(map[int64]string),
-		TaskCache:  make(map[int64]string),
+		PostgersCache:  make(map[int64]*Position),
 		StatusMap:  statuses,
 		CommandMap: cmds,
+		RiskCache: make(map[int64]*RiskCalc),
+		CheckCache: make(map[int64]*CoinCompare),
 	}
 }
-func (b *Bot) handleAdd(message *tgbotapi.Message) {
-	chatID := message.Chat.ID
 
-	b.States[chatID] = StateW8For
+func (b *Bot) handleBuyToken(message *tgbotapi.Message) {
+	chatID := message.Chat.ID
+	b.States[chatID] = StateW8ForTicker
 	msg := tgbotapi.NewMessage(message.Chat.ID, "Название: ")
 	b.Client.Send(msg)
+	
 }
+
+func (b *Bot) handleTokenPriceInput(update tgbotapi.Update) {
+	chatID := update.Message.Chat.ID
+	msg := tgbotapi.NewMessage(chatID, "Запомнили")
+	b.Client.Send(msg)
+	b.PostgersCache[chatID] = &Position{}
+	b.PostgersCache[chatID].Ticker = strings.ToUpper(update.Message.Text)
+	msg2 := tgbotapi.NewMessage(chatID, "По чем она сейчас")
+	b.Client.Send(msg2)
+	b.States[chatID] = StatePrice
+}
+
+func (b *Bot) handleValueInput(update tgbotapi.Update){
+	chatID := update.Message.Chat.ID
+	numb, err := strconv.ParseFloat(update.Message.Text, 64)
+	if err != nil{
+		msg1 := tgbotapi.NewMessage(chatID, "Это не число, введи цену цифрами")
+		b.Client.Send(msg1)
+		return
+	}
+	
+	b.PostgersCache[chatID].Price = numb
+	msg := tgbotapi.NewMessage(chatID, "Сколько токенов покупаешь?")
+	b.Client.Send(msg)
+	b.States[chatID] = StateValuePosition
+
+}
+
+func (b *Bot) handleLongLastInput(update tgbotapi.Update) {
+	chatID := update.Message.Chat.ID
+	numb, err := strconv.ParseFloat(update.Message.Text, 64)
+	if err != nil{
+		msg1 := tgbotapi.NewMessage(chatID, "Это не число, введи цену цифрами")
+		b.Client.Send(msg1)
+		return
+	}
+	b.PostgersCache[chatID].Amount = numb
+	msg := tgbotapi.NewMessage(chatID, "Период покупки")
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Краткосрок", "Краткосрок"),
+			tgbotapi.NewInlineKeyboardButtonData("Среднесрок", "Среднесрок"),
+			tgbotapi.NewInlineKeyboardButtonData("Долгосрок", "Долгосрок"),
+		),
+	)
+	
+	msg.ReplyMarkup = keyboard
+	b.Client.Send(msg)
+	b.States[chatID] = StateLongLastPosition
+}
+
+
 
 func (b *Bot) handleList(message *tgbotapi.Message) {
 	chatID := message.Chat.ID
 	tasks := b.Stor.List(chatID)
 	if len(tasks) == 0 {
-		msg := tgbotapi.NewMessage(chatID, "ТВОЙ СПИСОК ЗАДАЧ ПУСТ, ИДИ СПИ")
+		msg := tgbotapi.NewMessage(chatID, "ТВОЙ ПОРТФЕЛЬ ПУСТ, ТЫ brokeBoi")
 		b.Client.Send(msg)
 		return
 	}
@@ -152,15 +238,7 @@ func (b *Bot) handleList(message *tgbotapi.Message) {
 	b.Client.Send(msg)
 }
 
-func (b *Bot) handleStart(message *tgbotapi.Message) {
-	chatID := message.Chat.ID
-	msg := tgbotapi.NewMessage(chatID, `Привет! Я твой таск-менеджер. 
-	Доступные команды:
-	/add <задача> - добавить
-	/list - посмотреть дела
-	/del <номер> - удалить задачу`)
-	b.Client.Send(msg)
-}
+
 
 func (b *Bot) handleDel(message *tgbotapi.Message) {
 	arg := message.CommandArguments()
@@ -189,41 +267,10 @@ func (b *Bot) handleDel(message *tgbotapi.Message) {
 	b.Client.Send(msg)
 }
 
-func (b *Bot) handleTaskNameInput(update tgbotapi.Update) {
-	chatID := update.Message.Chat.ID
-	msg := tgbotapi.NewMessage(chatID, "Готово, всё назвали")
-	b.Client.Send(msg)
-	b.TaskCache[chatID] = update.Message.Text
-	msg2 := tgbotapi.NewMessage(chatID, "Принято. Опиши краткий инвест-тезис (почему берем, какая цель или триггер)")
-	b.Client.Send(msg2)
-	b.States[chatID] = StateTheasisW8
-}
-func (b *Bot) handleThesisInput(update tgbotapi.Update) {
-	chatID := update.Message.Chat.ID
-	b.TaskCache[chatID] = b.TaskCache[chatID] + " | " + update.Message.Text
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Краткосрок", "Краткосрок"),
-			tgbotapi.NewInlineKeyboardButtonData("Среднесрок", "Среднесрок"),
-			tgbotapi.NewInlineKeyboardButtonData("Долгосрок", "Долгосрок"),
-		),
-	)
-	msg := tgbotapi.NewMessage(chatID, "YUOR DEADLINE IS")
-	msg.ReplyMarkup = keyboard
-	b.Client.Send(msg)
-	b.States[chatID] = StateTimeRunOut
-}
 
-func (b *Bot) handleDeadlineInput(update tgbotapi.Update) {
-	chatID := update.Message.Chat.ID
-	task_name := b.TaskCache[chatID]
-	fullTask := task_name + "| DEADLINE: " + update.Message.Text
-	b.Stor.Add(chatID, fullTask)
-	msg := tgbotapi.NewMessage(chatID, "Всё иди занимайся я добавил")
-	b.Client.Send(msg)
-	b.States[chatID] = StateEmp
-	delete(b.TaskCache, chatID)
-}
+
+
+
 
 func (b *Bot) handleCallback(cal_back tgbotapi.CallbackQuery) {
 	chatID := cal_back.Message.Chat.ID
@@ -231,12 +278,12 @@ func (b *Bot) handleCallback(cal_back tgbotapi.CallbackQuery) {
 	anws := tgbotapi.NewCallback(cal_back.ID, text)
 	b.Client.Request(anws)
 	switch b.States[chatID]{
-		case  StateTimeRunOut: 
-			full_text := b.TaskCache[chatID] + " | DEADLINE: " + text
-			b.Stor.Add(chatID, full_text)
-			done_work := tgbotapi.NewMessage(chatID, "Готово, есть в листе")
+		case  StateLongLastPosition: 
+			b.PostgersCache[chatID].Period = text
+			b.Stor.Add(chatID,*b.PostgersCache[chatID])
+			done_work := tgbotapi.NewMessage(chatID, "Позиция успешно добавлена в портфель!")
 			b.Client.Send(done_work)
-			delete(b.TaskCache, chatID)
+			delete(b.PostgersCache, chatID)
 			b.States[chatID] = StateEmp
 		case StateCheck1:
 			if text == "КЛЯНУСЬ"{
@@ -286,7 +333,7 @@ func (b *Bot) handleCallback(cal_back tgbotapi.CallbackQuery) {
 func (b *Bot) handleCancel(update *tgbotapi.Message) {
 	chatID := update.Chat.ID
 	b.States[chatID] = StateEmp
-	delete(b.TaskCache, chatID)
+	delete(b.PostgersCache, chatID)
 	msg := tgbotapi.NewMessage(chatID, "да не очкуй, отменили тебе всё")
 	b.Client.Send(msg)
 }
@@ -324,46 +371,48 @@ func (b *Bot) handleRisk(update *tgbotapi.Message){
 }
 func (b *Bot) handleRiskSumHowMuch(update tgbotapi.Update){
 	chatID:= update.Message.Chat.ID
-	b.TaskCache[chatID] = update.Message.Text
-	_, err := strconv.Atoi(update.Message.Text)
-	if err!=nil{
+	b.RiskCache[chatID] = &RiskCalc{}
+	var err error
+	b.RiskCache[chatID].Deposit, err = strconv.ParseFloat(update.Message.Text, 64)
+	if err !=nil{
 		msg:=tgbotapi.NewMessage(chatID, "Это не, число введи заново")
 		b.Client.Send(msg)
 		return 
 	}
+	
 	msg:=tgbotapi.NewMessage(chatID, "Окей твой жеп я записал, какой процент риска?")
 	b.Client.Send(msg)
 	b.States[chatID] = StateRickProcent
 }
 func (b *Bot) handleRiskProccent(update tgbotapi.Update){
 	chatID:= update.Message.Chat.ID
-	_, err := strconv.Atoi(update.Message.Text)
+	var err error
+	b.RiskCache[chatID].RiskPercent, err = strconv.ParseFloat(update.Message.Text, 64)
 	if err!=nil{
 		msg:=tgbotapi.NewMessage(chatID, "Это не, число введи заново")
 		b.Client.Send(msg)
 		return 
 	} 
-	b.TaskCache[chatID]+="|" + update.Message.Text
+
 	msg:=tgbotapi.NewMessage(chatID, "Окей, твой риск процент у меня, какой стоп лос процент?")
 	b.Client.Send(msg)
 	b.States[chatID] = StateStopLossProcent
 }
 func (b *Bot) handleProccesOfUorDep(update tgbotapi.Update){
 	chatID:= update.Message.Chat.ID
-	casheText:= strings.Split(b.TaskCache[chatID], "|")
-	los, errlos:= strconv.ParseFloat(update.Message.Text, 64)
-	risk, _:= strconv.ParseFloat(casheText[1], 64)
-	dep, _:= strconv.ParseFloat(casheText[0], 64)
-	if errlos!=nil{
+	
+	var err error
+	b.RiskCache[chatID].StopLoss, err = strconv.ParseFloat(update.Message.Text, 64)
+	if err!=nil{
 		msg:=tgbotapi.NewMessage(chatID, "Это не, число введи заново")
 		b.Client.Send(msg)
 		return 
 	}
-	form:= dep*risk/los
+	form:= b.RiskCache[chatID].Deposit * b.RiskCache[chatID].RiskPercent  /  b.RiskCache[chatID].StopLoss
 	str := strconv.FormatFloat(form, 'f', -1, 64)
 	msg:=tgbotapi.NewMessage(chatID,str )
 	b.Client.Send(msg)
-	delete(b.TaskCache, chatID)
+	delete(b.RiskCache, chatID)
 	b.States[chatID] = StateEmp
 }
 
@@ -382,8 +431,8 @@ func (b *Bot) Start() {
 		chatID := update.Message.Chat.ID
 		if update.Message.IsCommand() {
 			switch update.Message.Command() {
-			case "add":
-				b.handleAdd(update.Message)
+			case "buy":
+				b.handleBuyToken(update.Message)
 			case "price":
 				b.handlerPrice(update.Message)
 			case "cancel":
@@ -394,7 +443,7 @@ func (b *Bot) Start() {
 				b.theThreeDa(update.Message)
 			case "risk":
 				b.handleRisk(update.Message)
-			case "del":
+			case "sell":
 				b.handleDel(update.Message)
 			case "cmd":
 				var text string
@@ -413,12 +462,19 @@ func (b *Bot) Start() {
 		} else {
 			currentstate := b.States[chatID]
 			switch currentstate {
-			case StateW8For:
-				b.handleTaskNameInput(update)
-			case StateTimeRunOut:
-				b.handleDeadlineInput(update)
-			case StateTheasisW8:
-				b.handleThesisInput(update)
+
+
+			case StateW8ForTicker:
+				b.handleTokenPriceInput(update)
+			case StatePrice:
+				b.handleValueInput(update)
+			case StateValuePosition:
+				b.handleLongLastInput(update)
+			case StateLongLastPosition:
+				b.handleCallback(*update.CallbackQuery)
+
+
+
 			case StateDeposit:
 				b.handleRiskSumHowMuch(update)
 			case StateFristCoin:
