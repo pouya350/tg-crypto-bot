@@ -13,9 +13,11 @@ import (
 const (
 	StateEmp             = ""
 	StateW8ForTicker	 = "waiting_ticker_name"
-	StatePrice           = "waiting_price"
+
 	StateValuePosition   = "waiting_value_amount"
 	StateLongLastPosition = "how_long_wait_For_profit"
+	StateSellAmount		 = "users_amount_sell"
+	StateWaitSellCallback= "keyboard_or_text"
 	
 	StateCheck1          = "check_1"
 	StateCheck2          = "check_2"
@@ -32,6 +34,7 @@ type Storage interface {
 	Add(chatID int64, pos Position)
 	List(chatID int64) []string
 	Delete(chatID int64, index int) error
+	GetTokenBalance(chatID int64, ticker string) (float64, error)
 }
 
 type Position struct{	
@@ -105,7 +108,7 @@ func (b *Bot) handlerSecondCoin(update tgbotapi.Update){
 	b.States[chatID] = StateEmp
 }
 func  getCryptoPrice(symbols string) (string, error){
-	url:="https://api.binance.com/api/v3/ticker/price?symbol=" + symbols
+	url:="https://api.binance.com/api/v3/ticker/price?symbol=" + symbols 
 	resp, err := http.Get(url)
 	if err !=nil {
 		return "Не удалось обработать запрос", fmt.Errorf("%w", err)
@@ -137,8 +140,9 @@ func BotConstruct(client *tgbotapi.BotAPI, stor Storage) *Bot {
 		StateEmp:             "Всё чисто, жду команд",
 		StateW8ForTicker:     "Ожидаю ввода названия токена",
 		StateValuePosition:   "Ожидаю ввода объема покупки",
-		StateLongLastPosition: "Как долго держать токе",
-		StatePrice:      	  "Ожидаю ввода нынешней цены",
+		StateLongLastPosition:"Как долго держать токе",
+		StateSellAmount:	  "Сколько токенов продаешь численно",
+		StateWaitSellCallback:"Сколько токенов продаешь в процентах (по кнопке)",
 		StateCheck1:          "Прохожу чек-лист перед покупкой (вопрос 1)",
 		StateCheck2:          "Прохожу чек-лист перед покупкой (вопрос 2)",
 		StateCheck3:          "Прохожу чек-лист перед покупкой (вопрос 3)",
@@ -172,30 +176,25 @@ func (b *Bot) handleBuyToken(message *tgbotapi.Message) {
 
 func (b *Bot) handleTokenPriceInput(update tgbotapi.Update) {
 	chatID := update.Message.Chat.ID
-	msg := tgbotapi.NewMessage(chatID, "Запомнили")
-	b.Client.Send(msg)
-	b.PostgersCache[chatID] = &Position{}
-	b.PostgersCache[chatID].Ticker = strings.ToUpper(update.Message.Text)
-	msg2 := tgbotapi.NewMessage(chatID, "По чем она сейчас")
-	b.Client.Send(msg2)
-	b.States[chatID] = StatePrice
-}
-
-func (b *Bot) handleValueInput(update tgbotapi.Update){
-	chatID := update.Message.Chat.ID
-	numb, err := strconv.ParseFloat(update.Message.Text, 64)
-	if err != nil{
-		msg1 := tgbotapi.NewMessage(chatID, "Это не число, введи цену цифрами")
-		b.Client.Send(msg1)
+	tokenPrice, err := getCryptoPrice(update.Message.Text+"USDT")
+	if err != nil {
+		msg:= tgbotapi.NewMessage(chatID, "Не удалось узнать цены!!!!")
+		b.Client.Send(msg)
 		return
 	}
-	
+	b.PostgersCache[chatID] = &Position{}
+	b.PostgersCache[chatID].Ticker = strings.ToUpper(update.Message.Text) + "USDT"
+	numb, _ := strconv.ParseFloat(tokenPrice, 64)
 	b.PostgersCache[chatID].Price = numb
-	msg := tgbotapi.NewMessage(chatID, "Сколько токенов покупаешь?")
+	text:= fmt.Sprintf("Сейчас стоит %.2f$", numb)
+	msg:=tgbotapi.NewMessage(chatID, text)
 	b.Client.Send(msg)
+	msg2 := tgbotapi.NewMessage(chatID, "Сколько токенов покупаешь?")
+	b.Client.Send(msg2)
 	b.States[chatID] = StateValuePosition
 
 }
+
 
 func (b *Bot) handleLongLastInput(update tgbotapi.Update) {
 	chatID := update.Message.Chat.ID
@@ -240,32 +239,79 @@ func (b *Bot) handleList(message *tgbotapi.Message) {
 
 
 
-func (b *Bot) handleDel(message *tgbotapi.Message) {
+func (b *Bot) handleSell(message *tgbotapi.Message) {
 	arg := message.CommandArguments()
 	chatID := message.Chat.ID
 	if arg == "" {
-		text := fmt.Sprintln("Укажи номер задачи, например: /del 1")
+		text := fmt.Sprintln("Укажи  сразу токен который хочешь продать")
 		msg := tgbotapi.NewMessage(chatID, text)
 		b.Client.Send(msg)
 		return
 	}
-	tasknumber, err := strconv.Atoi(arg)
-	if err != nil {
-		text := fmt.Sprintln("Номер задачи должен быть числом!")
-		msg := tgbotapi.NewMessage(chatID, text)
+	bdamount, err := b.Stor.GetTokenBalance(chatID, strings.ToUpper(arg) )
+	if err != nil{
+		msg:= tgbotapi.NewMessage(chatID, "Не удалось уточнить баланс")
 		b.Client.Send(msg)
+		b.handleCancel(message)
 		return
 	}
-	erre := b.Stor.Delete(chatID, tasknumber)
-	if erre != nil {
-		text := erre.Error()
-		msg := tgbotapi.NewMessage(message.Chat.ID, text)
+	if bdamount == 0 {
+		msg:=tgbotapi.NewMessage(chatID, "У тебя и так нет этого токена! Нечего продавать")
 		b.Client.Send(msg)
+		b.handleCancel(message)
 		return
-	}
-	msg := tgbotapi.NewMessage(chatID, fmt.Sprintln("Задача удалена!"))
+	} 
+	text:= fmt.Sprintf("Для %v, доступно к продаже : %g", strings.ToUpper(arg), bdamount )
+	msg:= tgbotapi.NewMessage(chatID, text)
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("10%", "sell_10"),
+			tgbotapi.NewInlineKeyboardButtonData("25%", "sell_25"),
+			tgbotapi.NewInlineKeyboardButtonData("50%", "sell_50"),
+			tgbotapi.NewInlineKeyboardButtonData("100%", "sell_100"),
+			tgbotapi.NewInlineKeyboardButtonData("Другая сумма", "sell_users_sum"),
+		),
+	)
+	msg.ReplyMarkup = keyboard
 	b.Client.Send(msg)
+	b.PostgersCache[chatID] = &Position{Ticker: strings.ToUpper(arg)}
+	b.States[chatID] = StateWaitSellCallback
 }
+
+func (b *Bot) handleSellAmount(update tgbotapi.Update){
+	chatID := update.Message.Chat.ID
+	sellamount, err := strconv.ParseFloat(update.Message.Text, 64)
+	if err != nil{
+		msg1 := tgbotapi.NewMessage(chatID, "Это не число, введи цену цифрами")
+		b.Client.Send(msg1)
+		return
+	}
+	bdamount, err := b.Stor.GetTokenBalance(chatID, strings.ToUpper(b.PostgersCache[chatID].Ticker))
+	if err != nil{
+		msg:=tgbotapi.NewMessage(chatID, "Я забыл что мы там хотели продать")
+		b.Client.Send(msg)
+		b.handleCancel(update.Message)
+		return
+	}
+	howLast:=fmt.Sprintf("Твой оставшийся баланс %s: %.2f", b.PostgersCache[chatID].Ticker ,bdamount - sellamount)
+	b.PostgersCache[chatID].Amount = -sellamount
+	sellPriceText, err3:= getCryptoPrice(b.PostgersCache[chatID].Ticker+"USDT")
+	if err3!=nil{
+		msg:=tgbotapi.NewMessage(chatID, "Не удалось получить актуальную цену")
+		b.Client.Send(msg)
+		b.handleCancel(update.Message)
+		return
+	}
+	text:= fmt.Sprintf("Токен успешно продана за %s. %s ", sellPriceText, howLast)
+	sellPriceReal, _ := strconv.ParseFloat(sellPriceText, 64)
+	b.PostgersCache[chatID].Price = sellPriceReal
+	msg:=tgbotapi.NewMessage(chatID, text)
+	b.Client.Send(msg)
+	b.Stor.Add(chatID, *b.PostgersCache[chatID])
+	delete(b.PostgersCache, chatID)
+	b.States[chatID] = StateEmp
+}
+
 
 
 
@@ -321,7 +367,49 @@ func (b *Bot) handleCallback(cal_back tgbotapi.CallbackQuery) {
 				b.States[chatID] = StateEmp
 			}else{
 				b.handleCancel(cal_back.Message)
-				
+
+			}
+
+		case StateWaitSellCallback:
+			switch text{
+			case "sell_users_sum":
+				msg:= tgbotapi.NewMessage(chatID, "Введи количество монет для продажи числом : ")
+				b.Client.Send(msg)
+				b.States[chatID] = StateSellAmount
+			case "sell_10", "sell_25", "sell_50", "sell_100":
+
+				bdamount, err := b.Stor.GetTokenBalance(chatID, strings.ToUpper(b.PostgersCache[chatID].Ticker))
+				if err != nil{
+					msg:=tgbotapi.NewMessage(chatID, "Я забыл что мы там хотели продать")
+					b.Client.Send(msg)
+					b.handleCancel(cal_back.Message)
+					return
+				}
+				parts := strings.Split(text, "_")
+				pescent, err2 := strconv.ParseFloat(parts[1], 64)
+				if err2 != nil{
+					msg:=tgbotapi.NewMessage(chatID, "ВВеди число в процентах")
+					b.Client.Send(msg)
+					return
+				} 
+				sellamount:= (pescent/100.0) * bdamount
+				b.PostgersCache[chatID].Amount =- sellamount
+				howLast:=fmt.Sprintf("Твой оставшийся баланс %s: %.2f", b.PostgersCache[chatID].Ticker ,bdamount - sellamount)
+				newprice, err4:= getCryptoPrice(b.PostgersCache[chatID].Ticker+"USDT")
+				if err4 != nil{
+					msg2:= tgbotapi.NewMessage(chatID, " Не удалось получить актуальную цену этой монеты -> не продаем")
+					b.Client.Send(msg2)
+					b.handleCancel(cal_back.Message)
+					return 
+				}
+				newfloatprice, _ := strconv.ParseFloat(newprice, 64)
+				b.PostgersCache[chatID].Price = newfloatprice
+				b.Stor.Add(chatID, *b.PostgersCache[chatID])
+				text:= fmt.Sprintf("Позиция успешно продана за %s. %s", newprice, howLast)
+				msg:=tgbotapi.NewMessage(chatID, text)
+				b.Client.Send(msg)
+				delete(b.PostgersCache, chatID)
+				b.States[chatID] = StateEmp
 			}
 		default:
 			b.States[chatID] = StateEmp
@@ -444,7 +532,7 @@ func (b *Bot) Start() {
 			case "risk":
 				b.handleRisk(update.Message)
 			case "sell":
-				b.handleDel(update.Message)
+				b.handleSell(update.Message)
 			case "cmd":
 				var text string
 				for k,v := range b.CommandMap{
@@ -466,13 +554,30 @@ func (b *Bot) Start() {
 
 			case StateW8ForTicker:
 				b.handleTokenPriceInput(update)
-			case StatePrice:
-				b.handleValueInput(update)
+
 			case StateValuePosition:
 				b.handleLongLastInput(update)
 			case StateLongLastPosition:
-				b.handleCallback(*update.CallbackQuery)
-
+				if update.CallbackQuery != nil{
+					b.handleCallback(*update.CallbackQuery)
+				}else{
+					msg:=tgbotapi.NewMessage(chatID, "Зря ты это сделал, надо было нажимать на кнопки пальцами!")
+					b.Client.Send(msg)
+					b.handleCancel(update.Message)
+					return
+				}
+				
+			case StateWaitSellCallback:
+				if update.CallbackQuery != nil{
+					b.handleCallback(*update.CallbackQuery)
+				}else{
+					msg:=tgbotapi.NewMessage(chatID, "Зря ты это сделал, надо было нажимать на кнопки пальцами!")
+					b.Client.Send(msg)
+					b.handleCancel(update.Message)
+					return
+				}
+			case StateSellAmount:
+				b.handleSellAmount(update)
 
 
 			case StateDeposit:

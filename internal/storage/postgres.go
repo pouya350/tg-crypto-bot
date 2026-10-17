@@ -37,7 +37,16 @@ func (p *PostgresStorage) Add(chatID int64, pos telegram.Position) {
     	log.Printf("Ошибка сохранения задачи в БД: %v", err)
 	}
 }
-
+func (p *PostgresStorage) GetTokenBalance(chatID int64, ticker string) (float64, error){
+	var balance float64
+	req:= "SELECT COALESCE(SUM(amount), 0) FROM portfolio WHERE chat_id = $1 AND ticker = $2"
+	err := p.db.QueryRow(req, chatID, ticker).Scan(&balance)
+	if err != nil{
+		log.Printf( "Не удалось получить колличество токенов ошибка запроса: %v ", err)	
+		return 0, err
+	}
+	return balance, nil
+}
 func (p *PostgresStorage) List(chatID int64) []string {
 	var tasks []string
 	str:= "select task_text from tasks where chat_id = $1 order by id"
