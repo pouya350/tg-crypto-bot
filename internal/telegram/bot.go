@@ -35,6 +35,7 @@ type Storage interface {
 	List(chatID int64) []string
 	Delete(chatID int64, index int) error
 	GetTokenBalance(chatID int64, ticker string) (float64, error)
+	GetPortfolio(chatID int64) (map[string]float64, error)
 }
 
 type Position struct{	

@@ -1,20 +1,83 @@
-# Telegram Crypto & Risk Management Bot
+# Наго — Telegram-бот «Инвест-Менеджер»
 
-A robust Telegram bot built with Go, implementing a Finite State Machine (FSM) for seamless multi-step user interactions. The bot provides real-time cryptocurrency price tracking via the Binance API and features a built-in risk management calculator for trading.
+Telegram-бот на Go для учёта криптопортфеля и дисциплины в сделках. Ведёт журнал покупок и продаж, подтягивает актуальные цены с Binance, считает размер позиции по риску и не даёт войти в сделку на эмоциях.
 
-## 🚀 Features
-* **Finite State Machine (FSM)**: Strict state management for complex dialogs and command routing.
-* **Binance API Integration**: Real-time cryptocurrency price parsing using `net/http` and `encoding/json`.
-* **Risk Management Calculator**: Step-by-step mathematical calculation of trade risks, deposits, and stop-losses.
-* **Secure Configuration**: Environment variables management using `godotenv` to protect API keys and database credentials.
-* **Clean Architecture**: Codebase structured with separation of concerns (`cmd/` for entrypoints, `internal/` for logic and storage).
-* **Dynamic Routing**: Scalable command and status map handlers for easy navigation.
+> 🚧 Проект в активной разработке. Это моя площадка для изучения Go и backend-разработки: архитектура, работа с БД, внешние API и конечные автоматы.
 
-## 🛠 Tech Stack
-* **Language**: Go (Golang)
-* **Telegram API**: `github.com/go-telegram-bot-api/telegram-bot-api/v5`
-* **Database**: PostgreSQL (with custom storage wrapper)
-* **External API**: Binance Public API
+## Возможности
 
-## ⚙️ Setup and Installation
+| Команда | Что делает |
+|---|---|
+| `/buy` | Покупка токена в несколько шагов: тикер → текущая цена с Binance → количество → срок удержания (кнопками) |
+| `/sell <тикер>` | Продажа: бот показывает доступный баланс и предлагает продать 10% / 25% / 50% / 100% кнопками или ввести своё количество |
+| `/price` | Курс любой пары монет, например BTC → USDT |
+| `/risk` | Калькулятор риск-менеджмента: депозит → % риска → % стоп-лосса → размер позиции |
+| `/check` | Чек-лист перед сделкой: три честных вопроса себе, прежде чем нажать «купить» |
+| `/list` | Портфель |
+| `/status` | На каком шаге диалога ты сейчас находишься |
+| `/cancel` | Отменить текущий диалог |
+| `/cmd` | Список команд |
 
+## Как это устроено
+
+**Конечный автомат (FSM).** Каждый многошаговый диалог (покупка, продажа, расчёт риска) — набор состояний. Бот хранит текущее состояние каждого чата и черновик операции в типизированных структурах (`Position`, `RiskCalc`, `CoinCompare`) и по состоянию решает, как обработать следующее сообщение или нажатие кнопки.
+
+**Журнал сделок вместо баланса.** В базе не хранится «сколько у меня BTC». Каждая операция — отдельная запись: покупка с положительным количеством, продажа с отрицательным. Баланс считается запросом `SUM(amount)`. Так сохраняется вся история, и на ней можно строить PnL и аналитику.
+
+**Живые цены.** При покупке и продаже цена берётся из публичного API Binance (`/api/v3/ticker/price`), вводить её вручную не нужно.
+
+## Стек
+
+- **Go** — `net/http`, `encoding/json`, `database/sql`
+- **Telegram Bot API** — [`go-telegram-bot-api/v5`](https://github.com/go-telegram-bot-api/telegram-bot-api)
+- **PostgreSQL** — драйвер [`lib/pq`](https://github.com/lib/pq)
+- **Binance Public API** — котировки без ключа
+- **godotenv** — секреты из `.env`, а не из кода
+
+## Структура проекта
+
+```
+cmd/bot/main.go          точка входа: конфиг → бот → БД → запуск
+internal/config/         загрузка TG_TOKEN и DB_URL из окружения
+internal/telegram/       бот, состояния FSM, обработчики команд и кнопок
+internal/storage/        работа с PostgreSQL
+```
+
+## Запуск
+
+Нужны Go 1.26+ и запущенный PostgreSQL.
+
+1. Создай бота у [@BotFather](https://t.me/BotFather) и получи токен.
+2. Создай в корне проекта файл `.env`:
+
+   ```env
+   TG_TOKEN=токен_от_BotFather
+   DB_URL=postgres://user:password@localhost:5432/dbname?sslmode=disable
+   ```
+
+   `.env` уже указан в `.gitignore` — не коммить его.
+3. Запусти:
+
+   ```bash
+   go run ./cmd/bot
+   ```
+
+Таблица `portfolio` создаётся автоматически при первом запуске.
+
+## Сейчас в работе
+
+- **Агрегатор портфеля** — сводка по всем монетам: остаток через `GROUP BY` / `HAVING` и текущая стоимость каждой позиции по ценам Binance.
+
+## Roadmap
+
+- [ ] **PnL** — средняя цена входа, прибыль и убыток в $ и %
+- [ ] **Ценовые алерты** — `/alert btc > 70000`, уведомление из фоновой горутины
+- [ ] **Журнал дисциплины** — статистика сделок «с чек-листом» и «без» и их доходность
+- [ ] **Графики** — свечи монеты и круговая диаграмма портфеля картинкой в чат
+- [ ] **Архитектура** — слои domain / service / storage, миграции, unit-тесты
+- [ ] **Инфраструктура** — Docker Compose, CI, деплой через webhook
+- [ ] **Telegram Mini App** — интерактивный дашборд прямо в Telegram
+
+## Автор
+
+[@pouya350](https://github.com/pouya350)
